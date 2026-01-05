@@ -1,11 +1,7 @@
 # ============================================================================
-# Sync Code to Portable Release
+# Sync Code to Portable Release (Pro Version)
 # ============================================================================
-# Features:
-# 1. Sync core files from main codebase to release/TradingAgentsCN-portable
-# 2. Preserve portable-specific configs and scripts
-# 3. Auto-handle dependency updates
-# 4. Generate sync report
+# 专业版打包脚本 - 排除课程源码和敏感内容
 # ============================================================================
 
 param(
@@ -25,7 +21,7 @@ $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $portableDir = Join-Path $root "release\TradingAgentsCN-portable"
 
 Write-Host "============================================================================" -ForegroundColor Cyan
-Write-Host "  Sync Code to Portable Release" -ForegroundColor Cyan
+Write-Host "  Sync Code to Portable Release (Pro Version)" -ForegroundColor Cyan
 Write-Host "============================================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -45,12 +41,15 @@ Write-Host ""
 $syncDirs = @(
     "app",
     "tradingagents",
-    "docs",
+    "web",
     "tests",
     "examples",
     "prompts",
-    "config"
+    "config",
+    "install"  # 🔥 包含数据库配置文件
 )
+
+# 🔥 注意：docs 目录不再完整同步，改为选择性同步
 
 $syncFiles = @(
     "requirements.txt",
@@ -77,6 +76,14 @@ $excludePatterns = @(
     "build"
 )
 
+# 🔥 新增：排除课程源码和敏感内容
+$excludeDirs = @(
+    "docs\courses\advanced\expanded",  # 排除24节课程扩写内容
+    "docs\courses\advanced\ppt",       # 排除PPT源文件
+    "docs\design",                     # 排除设计文档
+    "docs\email-to-tradingagents-team.txt"  # 排除邮件模板
+)
+
 $portableSpecific = @(
     ".env",
     "data",
@@ -84,7 +91,7 @@ $portableSpecific = @(
     "temp",
     "runtime",
     "vendors",
-    "venv",  # venv is created separately in portable directory
+    "venv",
     "frontend",
     "scripts\import_config_and_create_user.py",
     "scripts\init_mongodb_user.py",
@@ -106,6 +113,16 @@ function Test-ShouldExclude {
             return $true
         }
     }
+    
+    # 🔥 检查是否在排除目录中
+    foreach ($excludeDir in $excludeDirs) {
+        $normalized = $excludeDir -replace '\\', '/'
+        $pathNormalized = $Path -replace '\\', '/'
+        if ($pathNormalized -like "*$normalized*") {
+            return $true
+        }
+    }
+    
     return $false
 }
 
@@ -154,124 +171,107 @@ function Copy-WithProgress {
 
 $syncCount = 0
 $skipCount = 0
-$errorCount = 0
 
-Write-Host "Syncing files..." -ForegroundColor Cyan
+Write-Host "Syncing directories..." -ForegroundColor Yellow
 Write-Host ""
 
-# 1. Sync directories
 foreach ($dir in $syncDirs) {
-    $sourceDir = Join-Path $root $dir
-    $destDir = Join-Path $portableDir $dir
+    $sourcePath = Join-Path $root $dir
+    $destPath = Join-Path $portableDir $dir
 
-    if (-not (Test-Path $sourceDir)) {
-        Write-Host "SKIP: Directory not found: $dir" -ForegroundColor Yellow
+    if (-not (Test-Path $sourcePath)) {
+        Write-Host "  SKIP: $dir (not found)" -ForegroundColor Yellow
         continue
     }
 
-    Write-Host "Syncing directory: $dir" -ForegroundColor Cyan
+    Write-Host "Processing: $dir" -ForegroundColor Cyan
 
-    $files = Get-ChildItem -Path $sourceDir -Recurse -File
+    Get-ChildItem -Path $sourcePath -Recurse -File | ForEach-Object {
+        $relativePath = $_.FullName.Substring($root.Length + 1)
 
-    foreach ($file in $files) {
-        $relativePath = $file.FullName.Substring($sourceDir.Length + 1)
-        $destFile = Join-Path $destDir $relativePath
-        $relativeFromRoot = Join-Path $dir $relativePath
-
-        if (Test-ShouldExclude $file.FullName) {
-            continue
-        }
-
-        if (Test-IsPortableSpecific $relativeFromRoot) {
-            Write-Host "  SKIP: Portable-specific file: $relativeFromRoot" -ForegroundColor DarkGray
+        if (Test-ShouldExclude $_.FullName) {
             $skipCount++
-            continue
+            return
         }
 
-        Copy-WithProgress -Source $file.FullName -Destination $destFile -Description $relativeFromRoot
+        if (Test-IsPortableSpecific $relativePath) {
+            $skipCount++
+            return
+        }
+
+        $destFile = Join-Path $portableDir $relativePath
+        Copy-WithProgress -Source $_.FullName -Destination $destFile -Description $relativePath
         $syncCount++
     }
 
     Write-Host ""
 }
 
-# 2. Sync individual files
-Write-Host "Syncing root files..." -ForegroundColor Cyan
+# ============================================================================
+# Sync individual files
+# ============================================================================
+
+Write-Host "Syncing individual files..." -ForegroundColor Yellow
+Write-Host ""
+
 foreach ($file in $syncFiles) {
-    $sourceFile = Join-Path $root $file
-    $destFile = Join-Path $portableDir $file
+    $sourcePath = Join-Path $root $file
+    $destPath = Join-Path $portableDir $file
 
-    if (-not (Test-Path $sourceFile)) {
-        Write-Host "  SKIP: File not found: $file" -ForegroundColor Yellow
-        continue
+    if (Test-Path $sourcePath) {
+        Copy-WithProgress -Source $sourcePath -Destination $destPath -Description $file
+        $syncCount++
+    } else {
+        Write-Host "  SKIP: $file (not found)" -ForegroundColor Yellow
     }
-
-    if (Test-IsPortableSpecific $file) {
-        Write-Host "  SKIP: Portable-specific file: $file" -ForegroundColor DarkGray
-        $skipCount++
-        continue
-    }
-
-    Copy-WithProgress -Source $sourceFile -Destination $destFile -Description $file
-    $syncCount++
 }
 
 Write-Host ""
 
 # ============================================================================
-# Check Dependency Updates
+# 🔥 选择性同步 docs 目录（排除课程源码）
 # ============================================================================
 
-if (-not $SkipDependencies) {
-    Write-Host "Checking dependency updates..." -ForegroundColor Cyan
+Write-Host "Syncing docs (excluding course source)..." -ForegroundColor Yellow
+Write-Host ""
 
-    $sourceReq = Join-Path $root "requirements.txt"
-    $destReq = Join-Path $portableDir "requirements.txt"
+$docsSource = Join-Path $root "docs"
+$docsDest = Join-Path $portableDir "docs"
 
-    if ((Test-Path $sourceReq) -and (Test-Path $destReq)) {
-        $sourceHash = (Get-FileHash $sourceReq -Algorithm MD5).Hash
-        $destHash = (Get-FileHash $destReq -Algorithm MD5).Hash
+if (Test-Path $docsSource) {
+    # 只同步基础文档，排除课程扩写内容
+    Get-ChildItem -Path $docsSource -Recurse -File | ForEach-Object {
+        $relativePath = $_.FullName.Substring($root.Length + 1)
 
-        if ($sourceHash -ne $destHash) {
-            Write-Host "  WARNING: requirements.txt updated, please reinstall dependencies" -ForegroundColor Yellow
-            Write-Host "  Command: cd release\TradingAgentsCN-portable; venv\Scripts\pip install -r requirements.txt" -ForegroundColor Yellow
-        } else {
-            Write-Host "  OK: Dependencies file unchanged" -ForegroundColor Green
+        if (Test-ShouldExclude $_.FullName) {
+            $skipCount++
+            return
         }
+
+        $destFile = Join-Path $portableDir $relativePath
+        Copy-WithProgress -Source $_.FullName -Destination $destFile -Description $relativePath
+        $syncCount++
     }
-
-    Write-Host ""
 }
+
+Write-Host ""
 
 # ============================================================================
-# Generate Sync Report
+# Summary
 # ============================================================================
 
-Write-Host "============================================================================" -ForegroundColor Cyan
-Write-Host "  Sync Complete" -ForegroundColor Cyan
-Write-Host "============================================================================" -ForegroundColor Cyan
+Write-Host "============================================================================" -ForegroundColor Green
+Write-Host "  Sync Completed!" -ForegroundColor Green
+Write-Host "============================================================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Statistics:" -ForegroundColor Green
-Write-Host "  Synced: $syncCount files" -ForegroundColor Green
-Write-Host "  Skipped: $skipCount files (portable-specific)" -ForegroundColor Yellow
-if ($errorCount -gt 0) {
-    Write-Host "  Failed: $errorCount files" -ForegroundColor Red
-}
+Write-Host "Files synced: $syncCount" -ForegroundColor Cyan
+Write-Host "Files skipped: $skipCount" -ForegroundColor Yellow
 Write-Host ""
-
-if ($DryRun) {
-    Write-Host "NOTE: This was a dry run, no files were actually copied" -ForegroundColor Yellow
-    Write-Host "      Remove -DryRun parameter to perform actual sync" -ForegroundColor Yellow
-    Write-Host ""
-}
-
-Write-Host "Sync completed successfully!" -ForegroundColor Green
+Write-Host "Excluded content:" -ForegroundColor White
+Write-Host "  - docs/courses/advanced/expanded/ (24节课程源码)" -ForegroundColor Gray
+Write-Host "  - docs/courses/advanced/ppt/ (PPT源文件)" -ForegroundColor Gray
+Write-Host "  - docs/design/ (设计文档)" -ForegroundColor Gray
 Write-Host ""
-Write-Host "Next steps:" -ForegroundColor Cyan
-Write-Host "  1. Update dependencies: cd release\TradingAgentsCN-portable; venv\Scripts\pip install -r requirements.txt" -ForegroundColor White
-Write-Host "  2. Test portable version: cd release\TradingAgentsCN-portable; powershell -ExecutionPolicy Bypass -File start_all.ps1" -ForegroundColor White
-Write-Host "  3. Verify functionality: visit http://localhost" -ForegroundColor White
+Write-Host "Next: Run build_portable_package.ps1 to package" -ForegroundColor Cyan
 Write-Host ""
 
-# Exit with success code
-exit 0
