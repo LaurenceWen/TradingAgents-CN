@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
 """
-启动分析Worker的脚本
+Worker 模块启动入口
+支持使用 python -m app.worker 启动 Worker
 """
 
 import asyncio
@@ -9,8 +9,9 @@ import logging
 from pathlib import Path
 
 # 添加项目根目录到路径
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+project_root = Path(__file__).parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 from app.worker.analysis_worker import AnalysisWorker
 
@@ -44,6 +45,8 @@ async def main():
         print("\n⏹️  收到中断信号，正在关闭Worker...")
     except Exception as e:
         print(f"❌ Worker启动失败: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
     
     print("✅ Worker已安全退出")
