@@ -714,7 +714,13 @@ class TradingAgentsGraph:
                         final_state = init_agent_state.copy()
                     for node_name, node_update in chunk.items():
                         if not node_name.startswith('__'):
-                            final_state.update(node_update)
+                            try:
+                                if isinstance(node_update, dict):
+                                    final_state.update(node_update)
+                                elif isinstance(node_update, list):
+                                    final_state.update(dict(node_update))
+                            except (ValueError, TypeError) as e:
+                                logger.warning(f"[状态更新失败] node={node_name}, error={e}")
                 else:
                     # values 模式：chunk = {"messages": [...], ...}
                     if len(chunk.get("messages", [])) > 0:
@@ -756,13 +762,21 @@ class TradingAgentsGraph:
                         final_state = init_agent_state.copy()
                     for node_name, node_update in chunk.items():
                         if not node_name.startswith('__'):
-                            final_state.update(node_update)
+                            try:
+                                if isinstance(node_update, dict):
+                                    final_state.update(node_update)
+                                elif isinstance(node_update, list):
+                                    final_state.update(dict(node_update))
+                            except (ValueError, TypeError) as e:
+                                logger.warning(f"[状态更新失败] node={node_name}, error={e}")
             else:
                 # 原有的invoke模式（也需要计时）
                 logger.info("⏱️ 使用 invoke 模式执行分析（无进度回调）")
                 # 使用stream模式以便计时，但不发送进度更新
+                # 重要：stream_mode="values" 时 chunk 是完整状态，stream_mode="updates" 时 chunk 是 {node_name: update}
                 trace = []
                 final_state = None
+                is_values_mode = args.get("stream_mode") == "values"
                 for chunk in self.graph.stream(init_agent_state, **args):
                     # 记录节点计时
                     for node_name in chunk.keys():
@@ -781,9 +795,30 @@ class TradingAgentsGraph:
                     # 累积状态更新
                     if final_state is None:
                         final_state = init_agent_state.copy()
-                    for node_name, node_update in chunk.items():
-                        if not node_name.startswith('__'):
-                            final_state.update(node_update)
+
+                    if is_values_mode:
+                        # values 模式：chunk 是完整状态，直接用 chunk 更新或替换
+                        # 注意：这里不要用 update 来合并完整状态，因为 chunk 本身就代表完整状态
+                        # 但为了保留 init_agent_state 中的所有字段，我们做一次深度合并
+                        # values 模式下 chunk 的 key 是状态字段名，value 是字段值
+                        for key, value in chunk.items():
+                            if not key.startswith('__'):
+                                if isinstance(value, dict) and isinstance(final_state.get(key), dict):
+                                    # 深度合并字典（如 risk_debate_state, investment_debate_state）
+                                    final_state[key] = {**final_state[key], **value}
+                                else:
+                                    final_state[key] = value
+                    else:
+                        # updates 模式：chunk = {node_name: state_update}
+                        for node_name, node_update in chunk.items():
+                            if not node_name.startswith('__'):
+                                try:
+                                    if isinstance(node_update, dict):
+                                        final_state.update(node_update)
+                                    elif isinstance(node_update, list):
+                                        final_state.update(dict(node_update))
+                                except (ValueError, TypeError) as e:
+                                    logger.warning(f"[状态更新失败] node={node_name}, error={e}")
 
         # 记录最后一个节点的时间
         if current_node_name and current_node_start:
@@ -827,7 +862,7 @@ class TradingAgentsGraph:
             model_info = "Unknown"
 
         # 处理决策并添加模型信息
-        decision = self.process_signal(final_state["final_trade_decision"], company_name)
+        decision = self.process_signal(final_state.get("final_trade_decision", ""), company_name)
         decision['model_info'] = model_info
 
         # Return decision and processed signal
@@ -1112,34 +1147,28 @@ class TradingAgentsGraph:
     def _log_state(self, trade_date, final_state):
         """Log the final state to a JSON file."""
         self.log_states_dict[str(trade_date)] = {
-            "company_of_interest": final_state["company_of_interest"],
-            "trade_date": final_state["trade_date"],
-            "market_report": final_state["market_report"],
-            "sentiment_report": final_state["sentiment_report"],
-            "news_report": final_state["news_report"],
-            "fundamentals_report": final_state["fundamentals_report"],
+            "company_of_interest": final_state.get("company_of_interest", ""),
+            "trade_date": final_state.get("trade_date", ""),
+            "market_report": final_state.get("market_report", ""),
+            "sentiment_report": final_state.get("sentiment_report", ""),
+            "news_report": final_state.get("news_report", ""),            "fundamentals_report": final_state.get("fundamentals_report", ""),
             "investment_debate_state": {
-                "bull_history": final_state["investment_debate_state"]["bull_history"],
-                "bear_history": final_state["investment_debate_state"]["bear_history"],
-                "history": final_state["investment_debate_state"]["history"],
-                "current_response": final_state["investment_debate_state"][
-                    "current_response"
-                ],
-                "judge_decision": final_state["investment_debate_state"][
-                    "judge_decision"
-                ],
+                "bull_history": final_state.get("investment_debate_state", {}).get("bull_history", []),
+                "bear_history": final_state.get("investment_debate_state", {}).get("bear_history", []),
+                "history": final_state.get("investment_debate_state", {}).get("history", []),
+                "current_response": final_state.get("investment_debate_state", {}).get("current_response", ""),
+                "judge_decision": final_state.get("investment_debate_state", {}).get("judge_decision", ""),
             },
-            "trader_investment_decision": final_state["trader_investment_plan"],
+            "trader_investment_decision": final_state.get("trader_investment_plan", final_state.get("investment_plan", "")),
             "risk_debate_state": {
-                "risky_history": final_state["risk_debate_state"]["risky_history"],
-                "safe_history": final_state["risk_debate_state"]["safe_history"],
-                "neutral_history": final_state["risk_debate_state"]["neutral_history"],
-                "history": final_state["risk_debate_state"]["history"],
-                "judge_decision": final_state["risk_debate_state"]["judge_decision"],
+                "risky_history": final_state.get("risk_debate_state", {}).get("risky_history", []),
+                "safe_history": final_state.get("risk_debate_state", {}).get("safe_history", []),
+                "neutral_history": final_state.get("risk_debate_state", {}).get("neutral_history", []),
+                "history": final_state.get("risk_debate_state", {}).get("history", []),
+                "judge_decision": final_state.get("risk_debate_state", {}).get("judge_decision", ""),
             },
-            "investment_plan": final_state["investment_plan"],
-            "final_trade_decision": final_state["final_trade_decision"],
-        }
+            "investment_plan": final_state.get("investment_plan", ""),
+            "final_trade_decision": final_state.get("final_trade_decision", ""),        }
 
         # Save to file
         directory = Path(f"eval_results/{self.ticker}/TradingAgentsStrategy_logs/")

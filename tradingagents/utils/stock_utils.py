@@ -39,12 +39,12 @@ class StockUtils:
 
         ticker = str(ticker).strip().upper()
 
-        # 中国A股：6位数字
-        if re.match(r'^\d{6}$', ticker):
+        # 中国A股：6位数字，可选 .SH 或 .SZ 后缀（支持 603259.SH、000001.SZ、600519 格式）
+        if re.match(r'^\d{6}(\.SH|\.SZ)?$', ticker):
             return StockMarket.CHINA_A
 
         # 港股：4-5位数字.HK 或 纯4-5位数字（支持0700.HK、09988.HK、00700、9988格式）
-        if re.match(r'^\d{4,5}\.HK$', ticker) or re.match(r'^\d{4,5}$', ticker):
+        if re.match(r'^\d{4,5}(\.HK)?$', ticker) or re.match(r'^\d{4,5}\.HK$', ticker):
             return StockMarket.HONG_KONG
 
         # 美股：1-5位字母

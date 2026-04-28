@@ -203,6 +203,52 @@ class SignalProcessor:
                 logger.info(f"🔍 [SignalProcessor] 处理结果: {result}",
                            extra={'action': result['action'], 'target_price': result['target_price'],
                                  'confidence': result['confidence'], 'stock_symbol': stock_symbol})
+
+                # ============================================================
+                # 【持仓合理性检查】
+                # 若当前价已显著超越目标价，但信号仍为"持有"，则修正为卖出。
+                # 这是持仓策略检查（目标已实现，不应继续持有），不是价格验证。
+                # ============================================================
+                try:
+                    from tradingagents.utils.stock_utils import StockUtils
+                    market_info_check = StockUtils.get_market_info(stock_symbol)
+                    is_china_check = market_info_check['is_china']
+                    currency_sym = '¥' if is_china_check else '$'
+
+                    curr_price = None
+                    if is_china_check:
+                        try:
+                            from tradingagents.dataflows.interface import get_china_stock_info_unified
+                            stock_info = get_china_stock_info_unified(stock_symbol)
+                            if stock_info:
+                                import re
+                                m = re.search(r'当前价格[：:]?\s*[¥￥]?(\d+\.?\d*)', stock_info)
+                                if m:
+                                    curr_price = float(m.group(1))
+                        except:
+                            pass
+
+                    if curr_price and result['target_price'] and curr_price > 0:
+                        gap_pct = (curr_price - result['target_price']) / result['target_price'] * 100
+                        if gap_pct > 5 and result['action'] in ('持有', '观望', '中性'):
+                            logger.warning(
+                                f"⚠️ [SignalProcessor] 价格不一致！当前价{currency_sym}{curr_price} > 目标价{currency_sym}{result['target_price']} ({gap_pct:.1f}%溢价)，"
+                                f"原信号'{result['action']}'不合理，强制修正为'卖出'，置信度降至0.4"
+                            )
+                            result['action'] = '卖出'
+                            result['confidence'] = min(result['confidence'], 0.4)
+                            result['reasoning'] = (
+                                f'【持仓合理性修正】当前价{currency_sym}{curr_price}已显著高于目标价{currency_sym}{result["target_price"]}'
+                                f'（溢价{gap_pct:.1f}%），原"持有"建议不合理，系统自动修正为卖出。'
+                            )
+                        elif gap_pct < -10 and result['action'] == '持有':
+                            logger.info(
+                                f"ℹ️ [SignalProcessor] 当前价{currency_sym}{curr_price} < 目标价{currency_sym}{result['target_price']}，"
+                                f"建议关注逢低买入机会"
+                            )
+                except Exception as e:
+                    logger.warning(f"⚠️ [SignalProcessor] 持仓检查失败: {e}")
+
                 return result
             else:
                 # 如果无法解析JSON，使用简单的文本提取
